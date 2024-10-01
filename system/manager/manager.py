@@ -47,7 +47,7 @@ def manager_init() -> None:
     ("AutoLaneChangeTimer", "0"),
     ("AutoLaneChangeBsmDelay", "1"),
     ("BelowSpeedPause", "0"),
-    ("BrakeLights", "0"),
+    ("BrakeLights", "1"),
     ("BrightnessControl", "0"),
     ("CustomTorqueLateral", "0"),
     ("CameraControl", "2"),
