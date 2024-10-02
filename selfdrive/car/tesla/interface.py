@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import time
 from cereal import car
 from panda import Panda
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.tesla.values import CAR
 from openpilot.selfdrive.car import get_safety_config
 from openpilot.selfdrive.car.interfaces import CarInterfaceBase
@@ -16,9 +18,9 @@ class CarInterface(CarInterfaceBase):
   def _get_params(ret, candidate, fingerprint, car_fw, experimental_long, docs):
     ret.carName = "tesla"
 
-    # There is no safe way to do steer blending with user torque,
-    # so the steering behaves like autopilot. This is not
-    # how openpilot should be, hence dashcamOnly
+    # Steer blending with user torque is done virtually, and is limited to 2Nm of torque
+    # before it temporarily disables OP Lat control for higher user torque. This is not
+    # how openpilot typically works, hence dashcamOnly
     # ret.dashcamOnly = True
 
     ret.steerControlType = car.CarParams.SteerControlType.angle
@@ -26,10 +28,14 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalActuatorDelay = 0.5 # s
     ret.radarUnavailable = True
 
+    params = Params()
+    stock_acc = params.get_bool("StockLongTesla")
+
     if candidate in [CAR.TESLA_AP3_MODEL3, CAR.TESLA_AP3_MODELY]:
       flags = Panda.FLAG_TESLA_MODEL3_Y
-      flags |= Panda.FLAG_TESLA_LONG_CONTROL
-      ret.openpilotLongitudinalControl = True
+      if not stock_acc:
+        flags |= Panda.FLAG_TESLA_LONG_CONTROL
+      ret.openpilotLongitudinalControl = not stock_acc
       ret.safetyConfigs = [get_safety_config(car.CarParams.SafetyModel.tesla, flags)]
       ret.enableBsm = True
 
@@ -40,17 +46,14 @@ class CarInterface(CarInterfaceBase):
   def _update(self, c):
     ret = self.CS.update(self.cp, self.cp_cam, self.cp_adas)
 
-    if ret.cruiseState.available:
-      if self.enable_mads:
-        for b in self.CS.button_events:
-          if b.type == ButtonType.altButton1 and b.pressed:
-            self.CS.madsEnabled = True
-          elif b.type == ButtonType.altButton2 and b.pressed:
-            self.CS.madsEnabled = False
-        self.CS.madsEnabled = self.get_acc_mads(ret.cruiseState.enabled, self.CS.accEnabled, self.CS.madsEnabled)
-        self.CS.madsEnabled = False if self.CS.steer_warning == "EAC_ERROR_HANDS_ON" and self.CS.hands_on_level >= 3 else self.CS.madsEnabled
-    else:
-      self.CS.madsEnabled = False
+    if self.enable_mads:
+      for b in self.CS.button_events:
+        if b.type == ButtonType.altButton2 and not b.pressed:
+          self.CS.madsEnabled = not self.CS.madsEnabled
+      self.CS.madsEnabled = self.get_acc_mads(ret.cruiseState.enabled, self.CS.accEnabled, self.CS.madsEnabled)
+      self.CS.madsEnabled = False if self.CS.steering_override else self.CS.madsEnabled
+
+    self.CS.accEnabled = ret.cruiseState.enabled  # ACC state is controlled by the car itself
 
     if not self.CP.pcmCruise or (self.CP.pcmCruise and self.CP.minEnableSpeed > 0) or not self.CP.pcmCruiseSpeed:
       if any(b.type == ButtonType.cancel for b in self.CS.button_events):
@@ -58,11 +61,6 @@ class CarInterface(CarInterfaceBase):
     if self.get_sp_pedal_disengage(ret):
       self.CS.madsEnabled, self.CS.accEnabled = self.get_sp_cancel_cruise_state(self.CS.madsEnabled)
       ret.cruiseState.enabled = ret.cruiseState.enabled if not self.enable_mads else False if self.CP.pcmCruise else self.CS.accEnabled
-
-    if self.CP.pcmCruise and self.CP.minEnableSpeed > 0 and self.CP.pcmCruiseSpeed:
-      if ret.gasPressed and not ret.cruiseState.enabled:
-        self.CS.accEnabled = False
-      self.CS.accEnabled = ret.cruiseState.enabled or self.CS.accEnabled
 
     ret, self.CS = self.get_sp_common_state(ret, self.CS)
 
